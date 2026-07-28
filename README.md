@@ -16,7 +16,7 @@
     <img src="https://img.shields.io/badge/WelcomeDialog-Modders-7B61FF?style=for-the-badge&logo=android&logoColor=white" alt="WelcomeDialog for Modders">
   </a>
   <a href="./LICENSE">
-    <img src="https://img.shields.io/badge/License-EAL%20Community%201.0-2EA44F?style=for-the-badge" alt="EAL Community License 1.0">
+    <img src="https://img.shields.io/badge/License-EasyAntiLeech-2EA44F?style=for-the-badge" alt="EasyAntiLeech License">
   </a>
 </p>
 
@@ -239,7 +239,7 @@ It is a lightweight welcome/credit dialog made for modders who want to show the 
 
 ## License
 
-This project uses the **EasyAntiLeech Community License 1.0**. Read the full terms in [`LICENSE`](./LICENSE).
+This project uses the **EasyAntiLeech License**. Read the full terms in [`LICENSE`](./LICENSE).
 
 This is a source-available license, not an OSI-approved open-source license. You may study and modify the code under its terms, but you may not remove the creator credit, pretend the original project is yours, or redistribute a repacked copy under someone else's name.
 
