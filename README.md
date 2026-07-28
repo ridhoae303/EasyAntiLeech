@@ -9,9 +9,15 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ridhoae303/EasyAntiLeech"><strong>GitHub Repository</strong></a>
-  ·
-  <a href="./LICENSE"><strong>License</strong></a>
+  <a href="https://github.com/ridhoae303/EasyAntiLeech">
+    <img src="https://img.shields.io/badge/GitHub-Repository-181717?style=for-the-badge&logo=github&logoColor=white" alt="GitHub Repository">
+  </a>
+  <a href="https://github.com/ridhoae303/WelcomeDialog-for-modders">
+    <img src="https://img.shields.io/badge/WelcomeDialog-Modders-7B61FF?style=for-the-badge&logo=android&logoColor=white" alt="WelcomeDialog for Modders">
+  </a>
+  <a href="./LICENSE">
+    <img src="https://img.shields.io/badge/License-EAL%20Community%201.0-2EA44F?style=for-the-badge" alt="EAL Community License 1.0">
+  </a>
 </p>
 
 ---
