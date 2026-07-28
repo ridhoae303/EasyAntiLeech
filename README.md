@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./banner/eal-banner.jpg" alt="EasyAntiLeech banner" width="100%">
+  <img src="./banner/eal-banner.png" alt="EasyAntiLeech banner" width="100%">
 </p>
 
 <h1 align="center">EAL — EasyAntiLeech</h1>
