@@ -7,7 +7,6 @@
 #include <signal.h>
 #include <sys/mman.h>
 #include <cstring>
-#include <vector>
 #include <EasyObfuse.h>
 
 static bool gVerified = false;
@@ -132,8 +131,15 @@ static std::string f(JNIEnv* env, jbyteArray sigBytes) {
     return hex;
 }
 
+static jobject g(JNIEnv* env, jstring pkgName, jint userId) {
+    (void) env;
+    (void) pkgName;
+    (void) userId;
+    return nullptr;
+}
 
-static int getSdkInt(JNIEnv* env) {
+
+static jint getSdkInt(JNIEnv* env) {
     if (env == nullptr) return 0;
 
     jclass versionClass = env->FindClass(OBFUSCATE("android/os/Build$VERSION"));
@@ -146,130 +152,158 @@ static int getSdkInt(JNIEnv* env) {
     }
 
     jint sdk = env->GetStaticIntField(versionClass, sdkField);
-    clearJniException(env);
     env->DeleteLocalRef(versionClass);
-    return static_cast<int>(sdk);
+    if (clearJniException(env)) return 0;
+    return sdk;
 }
 
-static std::vector<std::string> hashesFromSignatureArray(JNIEnv* env, jobjectArray sigsArray) {
-    std::vector<std::string> hashes;
-    if (env == nullptr || sigsArray == nullptr) return hashes;
+static std::string signatureHashFromObject(JNIEnv* env, jobject sigObj) {
+    if (env == nullptr || sigObj == nullptr) return "";
 
-    jsize count = env->GetArrayLength(sigsArray);
-    if (count <= 0 || clearJniException(env)) return hashes;
+    jclass sigClass = env->GetObjectClass(sigObj);
+    if (isJniBad(env, sigClass)) return "";
 
-    for (jsize i = 0; i < count; ++i) {
-        jobject sig = env->GetObjectArrayElement(sigsArray, i);
-        if (isJniBad(env, sig)) {
-            clearJniException(env);
-            continue;
-        }
-
-        jclass sigClass = env->GetObjectClass(sig);
-        if (isJniBad(env, sigClass)) {
-            env->DeleteLocalRef(sig);
-            continue;
-        }
-
-        jmethodID toByteArray = env->GetMethodID(sigClass, OBFUSCATE("toByteArray"), OBFUSCATE("()[B"));
-        if (isJniBad(env, toByteArray)) {
-            env->DeleteLocalRef(sigClass);
-            env->DeleteLocalRef(sig);
-            continue;
-        }
-
-        jbyteArray byteArray = (jbyteArray) env->CallObjectMethod(sig, toByteArray);
-        if (isJniBad(env, byteArray)) {
-            env->DeleteLocalRef(sigClass);
-            env->DeleteLocalRef(sig);
-            continue;
-        }
-
-        std::string hash = f(env, byteArray);
-        env->DeleteLocalRef(byteArray);
+    jmethodID toByteArray = env->GetMethodID(sigClass, OBFUSCATE("toByteArray"), OBFUSCATE("()[B"));
+    if (isJniBad(env, toByteArray)) {
         env->DeleteLocalRef(sigClass);
-        env->DeleteLocalRef(sig);
-
-        if (!hash.empty()) {
-            hashes.push_back(hash);
-        }
+        return "";
     }
 
-    return hashes;
+    jbyteArray byteArray = (jbyteArray) env->CallObjectMethod(sigObj, toByteArray);
+    env->DeleteLocalRef(sigClass);
+    if (isJniBad(env, byteArray)) return "";
+
+    std::string hash = f(env, byteArray);
+    env->DeleteLocalRef(byteArray);
+    return hash;
 }
 
-static std::vector<std::string> collectSignatureHashesFromPkgInfo(JNIEnv* env, jobject pkgInfo) {
-    std::vector<std::string> hashes;
-    if (env == nullptr || pkgInfo == nullptr) return hashes;
+static bool signatureArrayAllowed(
+        JNIEnv* env,
+        jobjectArray sigsArray,
+        const char* const* allowedHashes,
+        size_t allowedCount,
+        bool requireAll
+) {
+    if (env == nullptr || sigsArray == nullptr || allowedHashes == nullptr || allowedCount == 0) {
+        return false;
+    }
 
-    jclass pkgInfoClass = env->GetObjectClass(pkgInfo);
-    if (isJniBad(env, pkgInfoClass)) return hashes;
+    jsize count = env->GetArrayLength(sigsArray);
+    if (count <= 0 || clearJniException(env)) return false;
 
-    const int sdk = getSdkInt(env);
+    bool anyMatch = false;
+    for (jsize idx = 0; idx < count; ++idx) {
+        jobject sigObj = env->GetObjectArrayElement(sigsArray, idx);
+        if (isJniBad(env, sigObj)) return false;
+
+        std::string hash = signatureHashFromObject(env, sigObj);
+        env->DeleteLocalRef(sigObj);
+        if (hash.empty()) return false;
+
+        bool matched = false;
+        for (size_t i = 0; i < allowedCount; ++i) {
+            if (hash == allowedHashes[i]) {
+                matched = true;
+                anyMatch = true;
+                break;
+            }
+        }
+
+        if (requireAll && !matched) return false;
+        if (!requireAll && matched) return true;
+    }
+
+    return requireAll ? true : anyMatch;
+}
+
+static bool verifyPackageSignature(
+        JNIEnv* env,
+        jobject pkgInfo,
+        const char* const* allowedHashes,
+        size_t allowedCount
+) {
+    if (env == nullptr || pkgInfo == nullptr || allowedHashes == nullptr || allowedCount == 0) {
+        return false;
+    }
+
+    const jint sdk = getSdkInt(env);
+    jobjectArray sigsArray = nullptr;
+    bool requireAll = false;
 
     if (sdk >= 28) {
-        jfieldID signingInfoField = env->GetFieldID(pkgInfoClass, OBFUSCATE("signingInfo"), OBFUSCATE("Landroid/content/pm/SigningInfo;"));
-        if (!isJniBad(env, signingInfoField)) {
-            jobject signingInfo = env->GetObjectField(pkgInfo, signingInfoField);
-            if (!isJniBad(env, signingInfo)) {
-                jclass signingInfoClass = env->GetObjectClass(signingInfo);
-                if (!isJniBad(env, signingInfoClass)) {
-                    jmethodID hasMultipleSigners = env->GetMethodID(signingInfoClass, OBFUSCATE("hasMultipleSigners"), OBFUSCATE("()Z"));
-                    if (!isJniBad(env, hasMultipleSigners)) {
-                        jboolean multiple = env->CallBooleanMethod(signingInfo, hasMultipleSigners);
-                        if (!clearJniException(env)) {
-                            const char* methodName = (multiple == JNI_TRUE)
-                                    ? OBFUSCATE("getApkContentsSigners")
-                                    : OBFUSCATE("getSigningCertificateHistory");
+        jclass pkgInfoClass = env->GetObjectClass(pkgInfo);
+        if (!isJniBad(env, pkgInfoClass)) {
+            jfieldID signingInfoField = env->GetFieldID(
+                    pkgInfoClass,
+                    OBFUSCATE("signingInfo"),
+                    OBFUSCATE("Landroid/content/pm/SigningInfo;")
+            );
+            if (!isJniBad(env, signingInfoField)) {
+                jobject signingInfo = env->GetObjectField(pkgInfo, signingInfoField);
+                if (!isJniBad(env, signingInfo)) {
+                    jclass signingInfoClass = env->GetObjectClass(signingInfo);
+                    if (!isJniBad(env, signingInfoClass)) {
+                        jmethodID hasMultipleSigners = env->GetMethodID(
+                                signingInfoClass,
+                                OBFUSCATE("hasMultipleSigners"),
+                                OBFUSCATE("()Z")
+                        );
+                        if (!isJniBad(env, hasMultipleSigners)) {
+                            jboolean multiple = env->CallBooleanMethod(signingInfo, hasMultipleSigners);
+                            if (!clearJniException(env)) {
+                                const char* methodName = (multiple == JNI_TRUE)
+                                        ? OBFUSCATE("getApkContentsSigners")
+                                        : OBFUSCATE("getSigningCertificateHistory");
 
-                            jmethodID getSigners = env->GetMethodID(
-                                    signingInfoClass,
-                                    methodName,
-                                    OBFUSCATE("()[Landroid/content/pm/Signature;")
-                            );
-                            if (!isJniBad(env, getSigners)) {
-                                jobjectArray signerArray = (jobjectArray) env->CallObjectMethod(signingInfo, getSigners);
-                                if (!isJniBad(env, signerArray)) {
-                                    hashes = hashesFromSignatureArray(env, signerArray);
-                                    env->DeleteLocalRef(signerArray);
-                                } else {
-                                    clearJniException(env);
+                                jmethodID getSigners = env->GetMethodID(
+                                        signingInfoClass,
+                                        methodName,
+                                        OBFUSCATE("()[Landroid/content/pm/Signature;")
+                                );
+                                if (!isJniBad(env, getSigners)) {
+                                    sigsArray = (jobjectArray) env->CallObjectMethod(signingInfo, getSigners);
+                                    if (!clearJniException(env) && sigsArray != nullptr) {
+                                        requireAll = (multiple == JNI_TRUE);
+                                    } else {
+                                        sigsArray = nullptr;
+                                    }
                                 }
                             }
                         }
+                        env->DeleteLocalRef(signingInfoClass);
                     }
-                    env->DeleteLocalRef(signingInfoClass);
+                    env->DeleteLocalRef(signingInfo);
                 }
-                env->DeleteLocalRef(signingInfo);
             }
+            env->DeleteLocalRef(pkgInfoClass);
         }
     }
 
-    if (!hashes.empty()) {
+    if (sigsArray == nullptr) {
+        jclass pkgInfoClass = env->GetObjectClass(pkgInfo);
+        if (isJniBad(env, pkgInfoClass)) return false;
+
+        jfieldID sigsField = env->GetFieldID(
+                pkgInfoClass,
+                OBFUSCATE("signatures"),
+                OBFUSCATE("[Landroid/content/pm/Signature;")
+        );
+        if (isJniBad(env, sigsField)) {
+            env->DeleteLocalRef(pkgInfoClass);
+            return false;
+        }
+
+        sigsArray = (jobjectArray) env->GetObjectField(pkgInfo, sigsField);
         env->DeleteLocalRef(pkgInfoClass);
-        return hashes;
+        if (clearJniException(env) || sigsArray == nullptr) return false;
+
+        const jsize count = env->GetArrayLength(sigsArray);
+        if (clearJniException(env) || count <= 0) return false;
+        requireAll = (count > 1);
     }
 
-    jfieldID sigsField = env->GetFieldID(pkgInfoClass, OBFUSCATE("signatures"), OBFUSCATE("[Landroid/content/pm/Signature;"));
-    if (!isJniBad(env, sigsField)) {
-        jobjectArray sigsArray = (jobjectArray) env->GetObjectField(pkgInfo, sigsField);
-        if (!isJniBad(env, sigsArray)) {
-            hashes = hashesFromSignatureArray(env, sigsArray);
-            env->DeleteLocalRef(sigsArray);
-        } else {
-            clearJniException(env);
-        }
-    }
-
-    env->DeleteLocalRef(pkgInfoClass);
-    return hashes;
-}
-
-static jobject g(JNIEnv* env, jstring pkgName, jint userId) {
-    (void) env;
-    (void) pkgName;
-    (void) userId;
-    return nullptr;
+    return signatureArrayAllowed(env, sigsArray, allowedHashes, allowedCount, requireAll);
 }
 
 static jobject h(JNIEnv* env, jobject context, jstring pkgName) {
@@ -285,15 +319,12 @@ static jobject h(JNIEnv* env, jobject context, jstring pkgName) {
     }
 
     jobject pm = env->CallObjectMethod(context, getPm);
-    if (isJniBad(env, pm)) {
-        env->DeleteLocalRef(ctxClass);
-        return nullptr;
-    }
+    env->DeleteLocalRef(ctxClass);
+    if (isJniBad(env, pm)) return nullptr;
 
     jclass pmClass = env->GetObjectClass(pm);
     if (isJniBad(env, pmClass)) {
         env->DeleteLocalRef(pm);
-        env->DeleteLocalRef(ctxClass);
         return nullptr;
     }
 
@@ -301,24 +332,20 @@ static jobject h(JNIEnv* env, jobject context, jstring pkgName) {
     if (isJniBad(env, getPkgInfo)) {
         env->DeleteLocalRef(pmClass);
         env->DeleteLocalRef(pm);
-        env->DeleteLocalRef(ctxClass);
         return nullptr;
     }
 
-    const jint flags = (getSdkInt(env) >= 28) ? 0x08000000 : 0x00000040;
-    jobject pkgInfo = env->CallObjectMethod(pm, getPkgInfo, pkgName, flags);
+    jint flags = 0x00000040;
+    if (getSdkInt(env) >= 28) {
+        flags = 0x08000000;
+    }
 
+    jobject pkgInfo = env->CallObjectMethod(pm, getPkgInfo, pkgName, flags);
     env->DeleteLocalRef(pmClass);
     env->DeleteLocalRef(pm);
-    env->DeleteLocalRef(ctxClass);
-
     if (clearJniException(env)) return nullptr;
-    return pkgInfo;
-}
 
-static std::vector<std::string> i(JNIEnv* env, jobject pkgInfo) {
-    if (env == nullptr || pkgInfo == nullptr) return {};
-    return collectSignatureHashesFromPkgInfo(env, pkgInfo);
+    return pkgInfo;
 }
 
 static void j() {
@@ -404,103 +431,44 @@ static bool m(JNIEnv* env, jobject context) {
     }
 
     jstring pkgName = (jstring) env->CallObjectMethod(context, getPkgName);
-    if (isJniBad(env, pkgName)) {
-        env->DeleteLocalRef(ctxClass);
-        return false;
-    }
+    env->DeleteLocalRef(ctxClass);
+    if (isJniBad(env, pkgName)) return false;
 
-    jmethodID getSharedPrefs = env->GetMethodID(ctxClass, OBFUSCATE("getSharedPreferences"), OBFUSCATE("(Ljava/lang/String;I)Landroid/content/SharedPreferences;"));
-    if (isJniBad(env, getSharedPrefs)) {
-        env->DeleteLocalRef(pkgName);
-        env->DeleteLocalRef(ctxClass);
-        return false;
-    }
+    jclass ctxClass2 = env->GetObjectClass(context);
+    if (isJniBad(env, ctxClass2)) return false;
+
+    jmethodID getSharedPrefs = env->GetMethodID(ctxClass2, OBFUSCATE("getSharedPreferences"), OBFUSCATE("(Ljava/lang/String;I)Landroid/content/SharedPreferences;"));
+    env->DeleteLocalRef(ctxClass2);
+    if (isJniBad(env, getSharedPrefs)) return false;
 
     jstring prefsName = env->NewStringUTF(OBFUSCATE("x9j3kf"));
-    if (isJniBad(env, prefsName)) {
-        env->DeleteLocalRef(pkgName);
-        env->DeleteLocalRef(ctxClass);
-        return false;
-    }
+    if (isJniBad(env, prefsName)) return false;
 
     jobject prefs = env->CallObjectMethod(context, getSharedPrefs, prefsName, 0);
     env->DeleteLocalRef(prefsName);
-    if (isJniBad(env, prefs)) {
-        env->DeleteLocalRef(pkgName);
-        env->DeleteLocalRef(ctxClass);
-        return false;
-    }
+    if (isJniBad(env, prefs)) return false;
 
     jclass spClass = env->GetObjectClass(prefs);
-    if (isJniBad(env, spClass)) {
-        env->DeleteLocalRef(prefs);
-        env->DeleteLocalRef(pkgName);
-        env->DeleteLocalRef(ctxClass);
-        return false;
-    }
+    if (isJniBad(env, spClass)) return false;
 
     jmethodID getBool = env->GetMethodID(spClass, OBFUSCATE("getBoolean"), OBFUSCATE("(Ljava/lang/String;Z)Z"));
-    if (isJniBad(env, getBool)) {
-        env->DeleteLocalRef(spClass);
-        env->DeleteLocalRef(prefs);
-        env->DeleteLocalRef(pkgName);
-        env->DeleteLocalRef(ctxClass);
-        return false;
-    }
+    if (isJniBad(env, getBool)) return false;
 
     jstring keyLeech = env->NewStringUTF(OBFUSCATE("ld"));
-    if (isJniBad(env, keyLeech)) {
-        env->DeleteLocalRef(spClass);
-        env->DeleteLocalRef(prefs);
-        env->DeleteLocalRef(pkgName);
-        env->DeleteLocalRef(ctxClass);
-        return false;
-    }
+    if (isJniBad(env, keyLeech)) return false;
 
     jboolean isLeech = env->CallBooleanMethod(prefs, getBool, keyLeech, JNI_FALSE);
     env->DeleteLocalRef(keyLeech);
-    if (clearJniException(env)) {
-        env->DeleteLocalRef(spClass);
-        env->DeleteLocalRef(prefs);
-        env->DeleteLocalRef(pkgName);
-        env->DeleteLocalRef(ctxClass);
-        return false;
-    }
+    if (clearJniException(env)) return false;
 
     if (isLeech) {
-        env->DeleteLocalRef(spClass);
-        env->DeleteLocalRef(prefs);
-        env->DeleteLocalRef(pkgName);
-        env->DeleteLocalRef(ctxClass);
         crashForIntegrityFailure(env);
         return false;
     }
 
     jobject pkgInfoPM = h(env, context, pkgName);
-    std::vector<std::string> pmHashes;
-    bool pmSuccess = false;
-
-    if (pkgInfoPM != nullptr) {
-        pmHashes = i(env, pkgInfoPM);
-        if (!pmHashes.empty() && !clearJniException(env)) {
-            pmSuccess = true;
-        }
-        env->DeleteLocalRef(pkgInfoPM);
-    }
-
-    if (clearJniException(env)) {
-        env->DeleteLocalRef(spClass);
-        env->DeleteLocalRef(prefs);
-        env->DeleteLocalRef(pkgName);
-        env->DeleteLocalRef(ctxClass);
-        return false;
-    }
-
-    if (!pmSuccess) {
-        env->DeleteLocalRef(spClass);
-        env->DeleteLocalRef(prefs);
-        env->DeleteLocalRef(pkgName);
-        env->DeleteLocalRef(ctxClass);
+    env->DeleteLocalRef(pkgName);
+    if (pkgInfoPM == nullptr) {
         return false;
     }
 
@@ -511,26 +479,14 @@ static bool m(JNIEnv* env, jobject context) {
         OBFUSCATE("466f3058649060cf07820b4d2b7ef1a0b05b0320fbb980128631f1b4f08f33dd")
     };
 
-    bool valid = false;
-    for (const std::string& hash : pmHashes) {
-        for (const char* allowed : allowedHashes) {
-            if (hash == allowed) {
-                valid = true;
-                break;
-            }
-        }
-        if (valid) break;
-    }
+    bool valid = verifyPackageSignature(env, pkgInfoPM, allowedHashes, 4);
+    env->DeleteLocalRef(pkgInfoPM);
+    if (clearJniException(env)) return false;
 
     if (valid) {
-        gVerified = true;
         l(env, context, OBFUSCATE("modded by ridhoae303 👻"));
         usleep(600000);
         l(env, context, OBFUSCATE("miyoshi takane best girl 💕"));
-        env->DeleteLocalRef(spClass);
-        env->DeleteLocalRef(prefs);
-        env->DeleteLocalRef(pkgName);
-        env->DeleteLocalRef(ctxClass);
         return true;
     }
 
@@ -557,16 +513,11 @@ static bool m(JNIEnv* env, jobject context) {
                 }
             }
         }
-        env->DeleteLocalRef(spEditorClass);
     } else {
         clearJniException(env);
     }
 
     l(env, context, k());
-    env->DeleteLocalRef(spClass);
-    env->DeleteLocalRef(prefs);
-    env->DeleteLocalRef(pkgName);
-    env->DeleteLocalRef(ctxClass);
     crashForIntegrityFailure(env);
     return false;
 }
@@ -583,28 +534,22 @@ Java_com_ridhoae303_expert_Takane_b(JNIEnv* env, jclass, jobject context) {
 
     jmethodID setCtx = env->GetStaticMethodID(cls, OBFUSCATE("e"), OBFUSCATE("(Landroid/content/Context;)V"));
     if (isJniBad(env, setCtx)) {
-        env->DeleteLocalRef(cls);
         return JNI_FALSE;
     }
 
     env->CallStaticVoidMethod(cls, setCtx, context);
     if (clearJniException(env)) {
-        env->DeleteLocalRef(cls);
         return JNI_FALSE;
     }
 
-    if (gVerified) {
-        env->DeleteLocalRef(cls);
-        return JNI_TRUE;
-    }
+    if (gVerified) return JNI_TRUE;
 
-    const jboolean verified = m(env, context) ? JNI_TRUE : JNI_FALSE;
-    if (verified == JNI_TRUE) {
+    const bool verified = m(env, context);
+    if (verified) {
         gVerified = true;
     }
 
-    env->DeleteLocalRef(cls);
-    return verified;
+    return verified ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" jint JNI_OnLoad(JavaVM* vm, void*) {
