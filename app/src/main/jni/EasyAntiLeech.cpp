@@ -7,8 +7,6 @@
 #include <signal.h>
 #include <sys/mman.h>
 #include <cstring>
-#include <cstdio>
-#include <ctime>
 #include <EasyObfuse.h>
 
 static bool gVerified = false;
@@ -81,209 +79,6 @@ static jstring newUtf8String(JNIEnv* env, const char* value) {
 
     if (isJniBad(env, result)) return nullptr;
     return result;
-}
-
-
-static std::string jstringToStdString(JNIEnv* env, jstring value) {
-    if (env == nullptr || value == nullptr) return "";
-    const char* chars = env->GetStringUTFChars(value, nullptr);
-    if (chars == nullptr) {
-        clearJniException(env);
-        return "";
-    }
-    std::string out(chars);
-    env->ReleaseStringUTFChars(value, chars);
-    return out;
-}
-
-static std::string jsonEscape(const std::string& input) {
-    std::string out;
-    out.reserve(input.size() + 16U);
-    for (unsigned char c : input) {
-        switch (c) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\b': out += "\\b"; break;
-            case '\f': out += "\\f"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if (c < 0x20) {
-                    char buf[7];
-                    std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned int>(c));
-                    out += buf;
-                } else {
-                    out.push_back(static_cast<char>(c));
-                }
-                break;
-        }
-    }
-    return out;
-}
-
-static std::string getStaticStringField(JNIEnv* env, const char* className, const char* fieldName) {
-    if (env == nullptr || className == nullptr || fieldName == nullptr) return "";
-    jclass cls = env->FindClass(className);
-    if (isJniBad(env, cls)) return "";
-    jfieldID field = env->GetStaticFieldID(cls, fieldName, OBFUSCATE("Ljava/lang/String;"));
-    if (isJniBad(env, field)) {
-        env->DeleteLocalRef(cls);
-        return "";
-    }
-    jstring value = (jstring) env->GetStaticObjectField(cls, field);
-    env->DeleteLocalRef(cls);
-    if (isJniBad(env, value)) return "";
-    std::string out = jstringToStdString(env, value);
-    env->DeleteLocalRef(value);
-    return out;
-}
-
-static bool postLeechReport(JNIEnv* env, const std::string& packageName, const char* reason) {
-    if (env == nullptr || packageName.empty() || reason == nullptr) return false;
-
-    const std::string deviceModel = getStaticStringField(env, OBFUSCATE("android/os/Build"), OBFUSCATE("MODEL"));
-    const std::string androidVersion = getStaticStringField(env, OBFUSCATE("android/os/Build$VERSION"), OBFUSCATE("RELEASE"));
-    const long long ts = static_cast<long long>(std::time(nullptr));
-
-    std::string body = std::string("{")
-            + "\"packageName\":\"" + jsonEscape(packageName) + "\"," 
-            + "\"reason\":\"" + jsonEscape(reason) + "\"," 
-            + "\"deviceModel\":\"" + jsonEscape(deviceModel) + "\"," 
-            + "\"androidVersion\":\"" + jsonEscape(androidVersion) + "\"," 
-            + "\"timestamp\":" + std::to_string(ts)
-            + "}";
-
-    jclass urlClass = nullptr;
-    jmethodID urlCtor = nullptr;
-    jmethodID openConnection = nullptr;
-    jstring endpoint = nullptr;
-    jobject urlObj = nullptr;
-    jobject connection = nullptr;
-    jclass connClass = nullptr;
-    jobject outStream = nullptr;
-    jclass outClass = nullptr;
-    jbyteArray bodyBytes = nullptr;
-    jclass byteArrayClass = nullptr;
-
-    auto cleanup = [&]() {
-        if (bodyBytes) env->DeleteLocalRef(bodyBytes);
-        if (outClass) env->DeleteLocalRef(outClass);
-        if (outStream) env->DeleteLocalRef(outStream);
-        if (connClass) env->DeleteLocalRef(connClass);
-        if (connection) env->DeleteLocalRef(connection);
-        if (urlObj) env->DeleteLocalRef(urlObj);
-        if (endpoint) env->DeleteLocalRef(endpoint);
-        if (urlClass) env->DeleteLocalRef(urlClass);
-        if (byteArrayClass) env->DeleteLocalRef(byteArrayClass);
-    };
-
-    endpoint = newUtf8String(env, OBFUSCATE("https://warden-sooty.vercel.app/api/verify"));
-    if (isJniBad(env, endpoint)) {
-        cleanup();
-        return false;
-    }
-
-    urlClass = env->FindClass(OBFUSCATE("java/net/URL"));
-    if (isJniBad(env, urlClass)) { cleanup(); return false; }
-
-    urlCtor = env->GetMethodID(urlClass, OBFUSCATE("<init>"), OBFUSCATE("(Ljava/lang/String;)V"));
-    if (isJniBad(env, urlCtor)) { cleanup(); return false; }
-
-    openConnection = env->GetMethodID(urlClass, OBFUSCATE("openConnection"), OBFUSCATE("()Ljava/net/URLConnection;"));
-    if (isJniBad(env, openConnection)) { cleanup(); return false; }
-
-    urlObj = env->NewObject(urlClass, urlCtor, endpoint);
-    if (isJniBad(env, urlObj)) { cleanup(); return false; }
-
-    connection = env->CallObjectMethod(urlObj, openConnection);
-    if (isJniBad(env, connection)) { cleanup(); return false; }
-
-    connClass = env->GetObjectClass(connection);
-    if (isJniBad(env, connClass)) { cleanup(); return false; }
-
-    jmethodID setDoOutput = env->GetMethodID(connClass, OBFUSCATE("setDoOutput"), OBFUSCATE("(Z)V"));
-    jmethodID setDoInput = env->GetMethodID(connClass, OBFUSCATE("setDoInput"), OBFUSCATE("(Z)V"));
-    jmethodID setUseCaches = env->GetMethodID(connClass, OBFUSCATE("setUseCaches"), OBFUSCATE("(Z)V"));
-    jmethodID setConnectTimeout = env->GetMethodID(connClass, OBFUSCATE("setConnectTimeout"), OBFUSCATE("(I)V"));
-    jmethodID setReadTimeout = env->GetMethodID(connClass, OBFUSCATE("setReadTimeout"), OBFUSCATE("(I)V"));
-    jmethodID setRequestProperty = env->GetMethodID(connClass, OBFUSCATE("setRequestProperty"), OBFUSCATE("(Ljava/lang/String;Ljava/lang/String;)V"));
-    jmethodID setRequestMethod = env->GetMethodID(connClass, OBFUSCATE("setRequestMethod"), OBFUSCATE("(Ljava/lang/String;)V"));
-    jmethodID getOutputStream = env->GetMethodID(connClass, OBFUSCATE("getOutputStream"), OBFUSCATE("()Ljava/io/OutputStream;"));
-    jmethodID getResponseCode = env->GetMethodID(connClass, OBFUSCATE("getResponseCode"), OBFUSCATE("()I"));
-    jmethodID disconnect = env->GetMethodID(connClass, OBFUSCATE("disconnect"), OBFUSCATE("()V"));
-    if (isJniBad(env, setDoOutput) || isJniBad(env, setDoInput) || isJniBad(env, setUseCaches) ||
-        isJniBad(env, setConnectTimeout) || isJniBad(env, setReadTimeout) ||
-        isJniBad(env, setRequestProperty) || isJniBad(env, setRequestMethod) ||
-        isJniBad(env, getOutputStream) || isJniBad(env, getResponseCode) || isJniBad(env, disconnect)) {
-        cleanup();
-        return false;
-    }
-
-    jstring post = newUtf8String(env, OBFUSCATE("POST"));
-    jstring contentTypeName = newUtf8String(env, OBFUSCATE("Content-Type"));
-    jstring contentTypeValue = newUtf8String(env, OBFUSCATE("application/json; charset=utf-8"));
-    jstring acceptName = newUtf8String(env, OBFUSCATE("Accept"));
-    jstring acceptValue = newUtf8String(env, OBFUSCATE("application/json"));
-    if (isJniBad(env, post) || isJniBad(env, contentTypeName) || isJniBad(env, contentTypeValue) ||
-        isJniBad(env, acceptName) || isJniBad(env, acceptValue)) {
-        if (post) env->DeleteLocalRef(post);
-        if (contentTypeName) env->DeleteLocalRef(contentTypeName);
-        if (contentTypeValue) env->DeleteLocalRef(contentTypeValue);
-        if (acceptName) env->DeleteLocalRef(acceptName);
-        if (acceptValue) env->DeleteLocalRef(acceptValue);
-        cleanup();
-        return false;
-    }
-
-    env->CallVoidMethod(connection, setDoOutput, JNI_TRUE);
-    env->CallVoidMethod(connection, setDoInput, JNI_TRUE);
-    env->CallVoidMethod(connection, setUseCaches, JNI_FALSE);
-    env->CallVoidMethod(connection, setConnectTimeout, 1200);
-    env->CallVoidMethod(connection, setReadTimeout, 1200);
-    env->CallVoidMethod(connection, setRequestMethod, post);
-    env->CallVoidMethod(connection, setRequestProperty, contentTypeName, contentTypeValue);
-    env->CallVoidMethod(connection, setRequestProperty, acceptName, acceptValue);
-    env->DeleteLocalRef(post);
-    env->DeleteLocalRef(contentTypeName);
-    env->DeleteLocalRef(contentTypeValue);
-    env->DeleteLocalRef(acceptName);
-    env->DeleteLocalRef(acceptValue);
-    if (clearJniException(env)) { cleanup(); return false; }
-
-    outStream = env->CallObjectMethod(connection, getOutputStream);
-    if (isJniBad(env, outStream)) { cleanup(); return false; }
-
-    outClass = env->GetObjectClass(outStream);
-    if (isJniBad(env, outClass)) { cleanup(); return false; }
-
-    jmethodID writeBytes = env->GetMethodID(outClass, OBFUSCATE("write"), OBFUSCATE("([B)V"));
-    jmethodID flush = env->GetMethodID(outClass, OBFUSCATE("flush"), OBFUSCATE("()V"));
-    jmethodID close = env->GetMethodID(outClass, OBFUSCATE("close"), OBFUSCATE("()V"));
-    if (isJniBad(env, writeBytes) || isJniBad(env, flush) || isJniBad(env, close)) {
-        cleanup();
-        return false;
-    }
-
-    bodyBytes = env->NewByteArray(static_cast<jsize>(body.size()));
-    if (isJniBad(env, bodyBytes)) { cleanup(); return false; }
-    env->SetByteArrayRegion(bodyBytes, 0, static_cast<jsize>(body.size()), reinterpret_cast<const jbyte*>(body.data()));
-    if (clearJniException(env)) { cleanup(); return false; }
-
-    env->CallVoidMethod(outStream, writeBytes, bodyBytes);
-    if (clearJniException(env)) { cleanup(); return false; }
-    env->CallVoidMethod(outStream, flush);
-    clearJniException(env);
-    env->CallVoidMethod(outStream, close);
-    clearJniException(env);
-
-    env->CallIntMethod(connection, getResponseCode);
-    clearJniException(env);
-    env->CallVoidMethod(connection, disconnect);
-    clearJniException(env);
-
-    cleanup();
-    return true;
 }
 
 static char hexNibble(unsigned int value) {
@@ -473,7 +268,7 @@ static int verifyPackageSignature(
                                 if (!isJniBad(env, getSigners)) {
                                     sigsArray = (jobjectArray) env->CallObjectMethod(signingInfo, getSigners);
                                     if (!clearJniException(env) && sigsArray != nullptr) {
-                                        requireAll = false;
+                                        requireAll = (multiple == JNI_TRUE);
                                         int modernState = signatureArrayState(env, sigsArray, allowedHashes, allowedCount, requireAll);
                                         env->DeleteLocalRef(sigsArray);
                                         env->DeleteLocalRef(signingInfoClass);
@@ -520,7 +315,7 @@ static int verifyPackageSignature(
             env->DeleteLocalRef(sigsArray);
             return kSignatureStateUnreadable;
         }
-        requireAll = false;
+        requireAll = (count > 1);
         int legacyState = signatureArrayState(env, sigsArray, allowedHashes, allowedCount, requireAll);
         env->DeleteLocalRef(sigsArray);
         return legacyState;
@@ -641,6 +436,231 @@ static void l(JNIEnv* env, jobject context, const char* msg) {
 }
 
 
+static std::string jstringToStdString(JNIEnv* env, jstring value) {
+    if (env == nullptr || value == nullptr) return {};
+
+    const char* chars = env->GetStringUTFChars(value, nullptr);
+    if (chars == nullptr) {
+        clearJniException(env);
+        return {};
+    }
+
+    std::string out(chars);
+    env->ReleaseStringUTFChars(value, chars);
+    return out;
+}
+
+static std::string jsonEscape(const std::string& input) {
+    std::string out;
+    out.reserve(input.size() + 8);
+
+    for (unsigned char c : input) {
+        switch (c) {
+            case '\\': out += "\\\\"; break;
+            case '"': out += "\\\""; break;
+            case '\b': out += "\\b"; break;
+            case '\f': out += "\\f"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    out.push_back(' ');
+                } else {
+                    out.push_back(static_cast<char>(c));
+                }
+                break;
+        }
+    }
+
+    return out;
+}
+
+static void postLeechReport(JNIEnv* env, jobject context, const char* reason) {
+    if (env == nullptr || context == nullptr || reason == nullptr) return;
+
+    jclass ctxClass = env->GetObjectClass(context);
+    if (isJniBad(env, ctxClass)) return;
+
+    jmethodID getPkgName = env->GetMethodID(
+            ctxClass,
+            OBFUSCATE("getPackageName"),
+            OBFUSCATE("()Ljava/lang/String;")
+    );
+    if (isJniBad(env, getPkgName)) {
+        env->DeleteLocalRef(ctxClass);
+        return;
+    }
+
+    jstring pkgName = (jstring) env->CallObjectMethod(context, getPkgName);
+    env->DeleteLocalRef(ctxClass);
+    if (isJniBad(env, pkgName)) return;
+
+    std::string packageName = jstringToStdString(env, pkgName);
+    env->DeleteLocalRef(pkgName);
+    if (packageName.empty()) return;
+
+    std::string payload = std::string("{\"packageName\":\"") +
+            jsonEscape(packageName) +
+            std::string("\",\"reason\":\"") +
+            jsonEscape(reason) +
+            std::string("\"}");
+
+    jstring jUrl = newUtf8String(env, OBFUSCATE("https://warden-sooty.vercel.app/api/verify"));
+    if (isJniBad(env, jUrl)) return;
+
+    jclass urlClass = env->FindClass(OBFUSCATE("java/net/URL"));
+    if (isJniBad(env, urlClass)) {
+        env->DeleteLocalRef(jUrl);
+        return;
+    }
+
+    jmethodID urlCtor = env->GetMethodID(urlClass, OBFUSCATE("<init>"), OBFUSCATE("(Ljava/lang/String;)V"));
+    if (isJniBad(env, urlCtor)) {
+        env->DeleteLocalRef(urlClass);
+        env->DeleteLocalRef(jUrl);
+        return;
+    }
+
+    jobject urlObj = env->NewObject(urlClass, urlCtor, jUrl);
+    env->DeleteLocalRef(jUrl);
+    if (isJniBad(env, urlObj)) {
+        env->DeleteLocalRef(urlClass);
+        return;
+    }
+
+    jmethodID openConnection = env->GetMethodID(urlClass, OBFUSCATE("openConnection"), OBFUSCATE("()Ljava/net/URLConnection;"));
+    if (isJniBad(env, openConnection)) {
+        env->DeleteLocalRef(urlObj);
+        env->DeleteLocalRef(urlClass);
+        return;
+    }
+
+    jobject connection = env->CallObjectMethod(urlObj, openConnection);
+    env->DeleteLocalRef(urlObj);
+    env->DeleteLocalRef(urlClass);
+    if (isJniBad(env, connection)) return;
+
+    jclass httpClass = env->FindClass(OBFUSCATE("java/net/HttpURLConnection"));
+    if (isJniBad(env, httpClass)) {
+        env->DeleteLocalRef(connection);
+        return;
+    }
+
+    jmethodID setConnectTimeout = env->GetMethodID(httpClass, OBFUSCATE("setConnectTimeout"), OBFUSCATE("(I)V"));
+    jmethodID setReadTimeout = env->GetMethodID(httpClass, OBFUSCATE("setReadTimeout"), OBFUSCATE("(I)V"));
+    jmethodID setDoOutput = env->GetMethodID(httpClass, OBFUSCATE("setDoOutput"), OBFUSCATE("(Z)V"));
+    jmethodID setUseCaches = env->GetMethodID(httpClass, OBFUSCATE("setUseCaches"), OBFUSCATE("(Z)V"));
+    jmethodID setRequestMethod = env->GetMethodID(httpClass, OBFUSCATE("setRequestMethod"), OBFUSCATE("(Ljava/lang/String;)V"));
+    jmethodID setRequestProperty = env->GetMethodID(httpClass, OBFUSCATE("setRequestProperty"), OBFUSCATE("(Ljava/lang/String;Ljava/lang/String;)V"));
+    jmethodID getOutputStream = env->GetMethodID(httpClass, OBFUSCATE("getOutputStream"), OBFUSCATE("()Ljava/io/OutputStream;"));
+    jmethodID getResponseCode = env->GetMethodID(httpClass, OBFUSCATE("getResponseCode"), OBFUSCATE("()I"));
+    jmethodID disconnect = env->GetMethodID(httpClass, OBFUSCATE("disconnect"), OBFUSCATE("()V"));
+
+    if (isJniBad(env, setConnectTimeout) || isJniBad(env, setReadTimeout) || isJniBad(env, setDoOutput) ||
+        isJniBad(env, setUseCaches) || isJniBad(env, setRequestMethod) || isJniBad(env, setRequestProperty) ||
+        isJniBad(env, getOutputStream) || isJniBad(env, getResponseCode) || isJniBad(env, disconnect)) {
+        env->DeleteLocalRef(httpClass);
+        env->DeleteLocalRef(connection);
+        return;
+    }
+
+    env->CallVoidMethod(connection, setConnectTimeout, 3500);
+    env->CallVoidMethod(connection, setReadTimeout, 3500);
+    env->CallVoidMethod(connection, setDoOutput, JNI_TRUE);
+    env->CallVoidMethod(connection, setUseCaches, JNI_FALSE);
+
+    jstring method = env->NewStringUTF(OBFUSCATE("POST"));
+    jstring headerName = env->NewStringUTF(OBFUSCATE("Content-Type"));
+    jstring contentType = env->NewStringUTF(OBFUSCATE("application/json; charset=UTF-8"));
+    if (!isJniBad(env, method) && !isJniBad(env, headerName) && !isJniBad(env, contentType)) {
+        env->CallVoidMethod(connection, setRequestMethod, method);
+        env->CallVoidMethod(connection, setRequestProperty, headerName, contentType);
+    }
+
+    if (clearJniException(env)) {
+        if (!isJniBad(env, method)) env->DeleteLocalRef(method);
+        if (!isJniBad(env, headerName)) env->DeleteLocalRef(headerName);
+        if (!isJniBad(env, contentType)) env->DeleteLocalRef(contentType);
+        env->DeleteLocalRef(httpClass);
+        env->DeleteLocalRef(connection);
+        return;
+    }
+
+    jclass osClass = env->FindClass(OBFUSCATE("java/io/OutputStream"));
+    if (isJniBad(env, osClass)) {
+        if (!isJniBad(env, method)) env->DeleteLocalRef(method);
+        if (!isJniBad(env, headerName)) env->DeleteLocalRef(headerName);
+        if (!isJniBad(env, contentType)) env->DeleteLocalRef(contentType);
+        env->DeleteLocalRef(httpClass);
+        env->DeleteLocalRef(connection);
+        return;
+    }
+
+    jmethodID write = env->GetMethodID(osClass, OBFUSCATE("write"), OBFUSCATE("([B)V"));
+    jmethodID flush = env->GetMethodID(osClass, OBFUSCATE("flush"), OBFUSCATE("()V"));
+    jmethodID close = env->GetMethodID(osClass, OBFUSCATE("close"), OBFUSCATE("()V"));
+
+    if (isJniBad(env, write) || isJniBad(env, flush) || isJniBad(env, close)) {
+        env->DeleteLocalRef(osClass);
+        if (!isJniBad(env, method)) env->DeleteLocalRef(method);
+        if (!isJniBad(env, headerName)) env->DeleteLocalRef(headerName);
+        if (!isJniBad(env, contentType)) env->DeleteLocalRef(contentType);
+        env->DeleteLocalRef(httpClass);
+        env->DeleteLocalRef(connection);
+        return;
+    }
+
+    jbyteArray body = env->NewByteArray(static_cast<jsize>(payload.size()));
+    if (isJniBad(env, body)) {
+        env->DeleteLocalRef(osClass);
+        if (!isJniBad(env, method)) env->DeleteLocalRef(method);
+        if (!isJniBad(env, headerName)) env->DeleteLocalRef(headerName);
+        if (!isJniBad(env, contentType)) env->DeleteLocalRef(contentType);
+        env->DeleteLocalRef(httpClass);
+        env->DeleteLocalRef(connection);
+        return;
+    }
+
+    env->SetByteArrayRegion(body, 0, static_cast<jsize>(payload.size()), reinterpret_cast<const jbyte*>(payload.data()));
+    if (clearJniException(env)) {
+        env->DeleteLocalRef(body);
+        env->DeleteLocalRef(osClass);
+        if (!isJniBad(env, method)) env->DeleteLocalRef(method);
+        if (!isJniBad(env, headerName)) env->DeleteLocalRef(headerName);
+        if (!isJniBad(env, contentType)) env->DeleteLocalRef(contentType);
+        env->DeleteLocalRef(httpClass);
+        env->DeleteLocalRef(connection);
+        return;
+    }
+
+    jobject out = env->CallObjectMethod(connection, getOutputStream);
+    if (!isJniBad(env, out)) {
+        env->CallVoidMethod(out, write, body);
+        env->CallVoidMethod(out, flush);
+        env->CallVoidMethod(out, close);
+        clearJniException(env);
+        env->DeleteLocalRef(out);
+    } else {
+        clearJniException(env);
+    }
+
+    env->DeleteLocalRef(body);
+    env->DeleteLocalRef(osClass);
+
+    env->CallIntMethod(connection, getResponseCode);
+    clearJniException(env);
+
+    env->CallVoidMethod(connection, disconnect);
+    clearJniException(env);
+
+    if (!isJniBad(env, method)) env->DeleteLocalRef(method);
+    if (!isJniBad(env, headerName)) env->DeleteLocalRef(headerName);
+    if (!isJniBad(env, contentType)) env->DeleteLocalRef(contentType);
+    env->DeleteLocalRef(httpClass);
+    env->DeleteLocalRef(connection);
+}
+
 static int m(JNIEnv* env, jobject context) {
     if (env == nullptr || context == nullptr) return kSignatureStateUnreadable;
 
@@ -742,6 +762,8 @@ static int m(JNIEnv* env, jobject context) {
         return kSignatureStateUnreadable;
     }
 
+    postLeechReport(env, context, OBFUSCATE("SIGNATURE_MISMATCH"));
+
     jclass spEditorClass = env->FindClass(OBFUSCATE("android/content/SharedPreferences$Editor"));
     if (!isJniBad(env, spEditorClass)) {
         jmethodID edit = env->GetMethodID(spClass, OBFUSCATE("edit"), OBFUSCATE("()Landroid/content/SharedPreferences$Editor;"));
@@ -769,7 +791,6 @@ static int m(JNIEnv* env, jobject context) {
         clearJniException(env);
     }
 
-    postLeechReport(env, packageName, OBFUSCATE("SIGNATURE_MISMATCH"));
     l(env, context, k());
     crashForIntegrityFailure(env);
     return kSignatureStateMismatch;
