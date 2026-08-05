@@ -476,6 +476,123 @@ static std::string jsonEscape(const std::string& input) {
     return out;
 }
 
+
+static bool shouldShowOneTimeToast(JNIEnv* env, jobject context, const char* key) {
+    if (env == nullptr || context == nullptr || key == nullptr) return true;
+
+    jclass ctxClass = env->GetObjectClass(context);
+    if (isJniBad(env, ctxClass)) return true;
+
+    jmethodID getSharedPrefs = env->GetMethodID(
+            ctxClass,
+            OBFUSCATE("getSharedPreferences"),
+            OBFUSCATE("(Ljava/lang/String;I)Landroid/content/SharedPreferences;")
+    );
+    if (isJniBad(env, getSharedPrefs)) {
+        env->DeleteLocalRef(ctxClass);
+        return true;
+    }
+
+    jstring prefsName = env->NewStringUTF(OBFUSCATE("x9j3kf"));
+    if (isJniBad(env, prefsName)) {
+        env->DeleteLocalRef(ctxClass);
+        return true;
+    }
+
+    jobject prefs = env->CallObjectMethod(context, getSharedPrefs, prefsName, 0);
+    env->DeleteLocalRef(prefsName);
+    if (isJniBad(env, prefs)) {
+        env->DeleteLocalRef(ctxClass);
+        return true;
+    }
+
+    jclass spClass = env->GetObjectClass(prefs);
+    if (isJniBad(env, spClass)) {
+        env->DeleteLocalRef(prefs);
+        env->DeleteLocalRef(ctxClass);
+        return true;
+    }
+
+    jmethodID getBool = env->GetMethodID(
+            spClass,
+            OBFUSCATE("getBoolean"),
+            OBFUSCATE("(Ljava/lang/String;Z)Z")
+    );
+    if (isJniBad(env, getBool)) {
+        env->DeleteLocalRef(spClass);
+        env->DeleteLocalRef(prefs);
+        env->DeleteLocalRef(ctxClass);
+        return true;
+    }
+
+    jstring keyStr = env->NewStringUTF(key);
+    if (isJniBad(env, keyStr)) {
+        env->DeleteLocalRef(spClass);
+        env->DeleteLocalRef(prefs);
+        env->DeleteLocalRef(ctxClass);
+        return true;
+    }
+
+    jboolean alreadyShown = env->CallBooleanMethod(prefs, getBool, keyStr, JNI_FALSE);
+    env->DeleteLocalRef(keyStr);
+    if (clearJniException(env)) {
+        env->DeleteLocalRef(spClass);
+        env->DeleteLocalRef(prefs);
+        env->DeleteLocalRef(ctxClass);
+        return true;
+    }
+
+    if (alreadyShown == JNI_TRUE) {
+        env->DeleteLocalRef(spClass);
+        env->DeleteLocalRef(prefs);
+        env->DeleteLocalRef(ctxClass);
+        return false;
+    }
+
+    jclass editorClass = env->FindClass(OBFUSCATE("android/content/SharedPreferences$Editor"));
+    if (!isJniBad(env, editorClass)) {
+        jmethodID edit = env->GetMethodID(
+                spClass,
+                OBFUSCATE("edit"),
+                OBFUSCATE("()Landroid/content/SharedPreferences$Editor;")
+        );
+        if (!isJniBad(env, edit)) {
+            jobject editor = env->CallObjectMethod(prefs, edit);
+            if (!isJniBad(env, editor)) {
+                jmethodID putBool = env->GetMethodID(
+                        editorClass,
+                        OBFUSCATE("putBoolean"),
+                        OBFUSCATE("(Ljava/lang/String;Z)Landroid/content/SharedPreferences$Editor;")
+                );
+                if (!isJniBad(env, putBool)) {
+                    jstring markKey = env->NewStringUTF(key);
+                    if (!isJniBad(env, markKey)) {
+                        env->CallObjectMethod(editor, putBool, markKey, JNI_TRUE);
+                        env->DeleteLocalRef(markKey);
+                        clearJniException(env);
+                    }
+                }
+
+                jmethodID apply = env->GetMethodID(editorClass, OBFUSCATE("apply"), OBFUSCATE("()V"));
+                if (!isJniBad(env, apply)) {
+                    env->CallVoidMethod(editor, apply);
+                    clearJniException(env);
+                }
+
+                env->DeleteLocalRef(editor);
+            }
+        }
+        env->DeleteLocalRef(editorClass);
+    } else {
+        clearJniException(env);
+    }
+
+    env->DeleteLocalRef(spClass);
+    env->DeleteLocalRef(prefs);
+    env->DeleteLocalRef(ctxClass);
+    return true;
+}
+
 static void postLeechReport(JNIEnv* env, jobject context, const char* reason) {
     if (env == nullptr || context == nullptr || reason == nullptr) return;
 
@@ -752,9 +869,11 @@ static int m(JNIEnv* env, jobject context) {
     if (clearJniException(env)) return kSignatureStateUnreadable;
 
     if (sigState == kSignatureStateMatch) {
-        l(env, context, OBFUSCATE("modded by ridhoae303 👻"));
-        usleep(600000);
-        l(env, context, OBFUSCATE("miyoshi takane best girl 💕"));
+        if (shouldShowOneTimeToast(env, context, OBFUSCATE("eal_valid_toast_once"))) {
+            l(env, context, OBFUSCATE("modded by ridhoae303 👻"));
+            usleep(600000);
+            l(env, context, OBFUSCATE("miyoshi takane best girl 💕"));
+        }
         return kSignatureStateMatch;
     }
 
