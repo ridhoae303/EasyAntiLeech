@@ -235,7 +235,7 @@ The mod-creator dialog used alongside EAL comes from another project of mine:
 
 **[WelcomeDialog for Modders](https://github.com/ridhoae303/WelcomeDialog-for-modders)**
 
-It is a lightweight welcome/credit dialog made for modders who want to show the original creator name clearly inside the app. EAL handles the signature check; WelcomeDialog handles the creator intro. They work nicely together, and yes, this is absolutely a shameless plug for my own repo. 😄
+It is a lightweight welcome/credit dialog made for modders who want to show the original creator name clearly inside the app. EAL handles the signature check; WelcomeDialog handles the creator intro. They work nicely together, and yes, this is absolutely a shameless plug for my own repo. 😁
 
 ## License
 
